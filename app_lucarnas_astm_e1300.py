@@ -563,11 +563,49 @@ def _rot(points, theta_rad, origin=(0.0, 0.0)):
     return out
 
 
+def combo_gravity_label(combo: LoadCombo) -> str:
+    """
+    Etiqueta corta de la parte gravitacional de una combinación: "D", "D + S",
+    "D + Lr" o "D + S + Lr". Se usa para rotular el vector vertical del esquema.
+    """
+    parts = []
+    if combo.f_D:
+        parts.append("D")
+    if combo.f_S:
+        parts.append("S")
+    if combo.f_Lr:
+        parts.append("Lr")
+    return " + ".join(parts) if parts else "D"
+
+
+def governing_gravity_combo(results: list, combos: list) -> tuple:
+    """
+    Identifica la combinación GRAVITACIONAL (sin viento) que gobierna la
+    verificación, según el mayor factor de utilización a flexión.
+
+    Se decide por demanda real y no por la magnitud bruta en kPa: la nieve
+    puede gobernar frente a una sobrecarga de techo mayor, porque colapsa la
+    rigidez al corte del interlayer y se amplifica por duración de carga.
+
+    Retorna (etiqueta [str], ComboResult gobernante | None).
+    """
+    by_name = {c.name: c for c in combos if abs(c.f_W) < 1e-12}
+    grav_results = [r for r in results if r.combo in by_name]
+    if not grav_results:
+        return "D", None
+    gov = max(grav_results, key=lambda r: r.fu_stress)
+    return combo_gravity_label(by_name[gov.combo]), gov
+
+
 def draw_inclined_section(cfg1: LiteConfig, cfg2: LiteConfig = None,
-                          air_gap: float = 0.0, theta_deg: float = 30.0):
+                          air_gap: float = 0.0, theta_deg: float = 30.0,
+                          grav_label: str = "D"):
     """
     Dibuja el esquema transversal de la lucarna inclinada un ángulo theta,
-    con vectores de gravedad/nieve (vertical) y viento (perpendicular al vidrio).
+    con vectores de gravedad (vertical) y viento (perpendicular al vidrio).
+
+    grav_label : rótulo del vector vertical, correspondiente a la combinación
+        gravitacional gobernante ("D", "D + S", "D + Lr" o "D + S + Lr").
 
     Convención: theta = 0° es horizontal; theta = 90° es vertical.
     El eje local "u" recorre el largo del vidrio; el eje local "v" es el espesor.
@@ -608,11 +646,12 @@ def draw_inclined_section(cfg1: LiteConfig, cfg2: LiteConfig = None,
     face_pt = _rot([(length / 2.0, total_thk)], theta)[0]
     arrow_len = 42.0
 
-    # Gravedad / Nieve: siempre vertical hacia abajo
+    # Gravedad: siempre vertical hacia abajo. El rótulo refleja la combinación
+    # gravitacional gobernante determinada por demanda (no por kPa brutos).
     ax.annotate("", xy=(face_pt[0], face_pt[1] - 3),
                 xytext=(face_pt[0], face_pt[1] + arrow_len),
                 arrowprops=dict(arrowstyle="-|>", linewidth=2.4, color="#2b6cb0"))
-    ax.text(face_pt[0] + 2, face_pt[1] + arrow_len + 3, "D + S + Lr\n(vertical)",
+    ax.text(face_pt[0] + 2, face_pt[1] + arrow_len + 3, f"{grav_label}\n(vertical)",
             fontsize=9, fontweight="bold", color="#2b6cb0", ha="left", va="bottom")
 
     # Viento: perpendicular al plano del vidrio (dirección normal local +v)
@@ -847,6 +886,7 @@ for combo in combos:
 gov_stress = max(results, key=lambda r: r.fu_stress)
 gov_defl = max(results, key=lambda r: r.fu_defl)
 gov_load = max(results, key=lambda r: abs(r.q_real))
+grav_label, gov_grav = governing_gravity_combo(results, combos)
 design_ok = (gov_stress.fu_stress <= 1.0) and (gov_defl.fu_defl <= 1.0)
 weight_total = sum(g.dead_load() * a_m * b_m / 9.81 for g in geometries)  # [kg]
 
@@ -986,9 +1026,19 @@ with col_main:
 
 with col_fig:
     st.subheader("Sección Transversal")
-    fig = draw_inclined_section(cfg1, cfg2 if is_igu else None, air_gap_mm, theta_deg)
+    fig = draw_inclined_section(cfg1, cfg2 if is_igu else None, air_gap_mm,
+                                theta_deg, grav_label)
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
+
+    if gov_grav is not None:
+        criterio = ("S y Lr concurrentes (tick activado)" if combine_s_lr
+                    and s_kpa > 1e-9 and lr_kpa > 1e-9
+                    else "S y Lr alternativas — gobierna la de mayor demanda")
+        st.caption(
+            f"Vector gravitacional: **{grav_label}** · {criterio} · "
+            f"FU = {gov_grav.fu_stress:.3f} ({gov_grav.lite})"
+        )
 
     st.markdown("**Datos generales**")
     st.markdown(
