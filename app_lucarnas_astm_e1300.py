@@ -423,7 +423,8 @@ def load_share_factors(t1_ef: float, t2_ef: float) -> tuple:
 # 7. MOTOR MATEMÁTICO — COMBINACIONES Y VERIFICACIÓN
 # =====================================================================
 
-def build_load_combos(has_wind: bool, has_snow: bool, has_live: bool) -> list:
+def build_load_combos(has_wind: bool, has_snow: bool, has_live: bool,
+                      combine_s_lr: bool = False) -> list:
     """
     Genera las combinaciones de carga de servicio a evaluar.
 
@@ -431,6 +432,12 @@ def build_load_combos(has_wind: bool, has_snow: bool, has_live: bool) -> list:
     vidrio con cos(theta); el viento (W) ya actúa perpendicular al plano.
     Se evalúan viento en presión y en succión (esta última puede aliviar o
     revertir el efecto del peso propio).
+
+    combine_s_lr : si es False (por defecto), la nieve (S) y la sobrecarga de
+        techo (Lr) se tratan como acciones ALTERNATIVAS y NO concurrentes,
+        criterio de ASCE 7 (D + (Lr o S)). Si es True, se agrega la combinación
+        D + S + Lr para cubrir escenarios de concurrencia explícita
+        (p. ej. mantención sobre nieve residual).
     """
     combos = [LoadCombo("D·cosθ (permanente)", f_D=1.0, long_term=True)]
 
@@ -445,6 +452,10 @@ def build_load_combos(has_wind: bool, has_snow: bool, has_live: bool) -> list:
         # Coexistencia parcial (análoga a ASCE 7 ASD: D + 0.75S + 0.75W)
         combos.append(LoadCombo("D·cosθ + 0.75·S·cosθ + 0.75·W",
                                 f_D=1.0, f_S=0.75, f_W=0.75, long_term=True))
+    if combine_s_lr and has_snow and has_live:
+        # Concurrencia explícita S + Lr (fuera del criterio por defecto de ASCE 7)
+        combos.append(LoadCombo("D·cosθ + S·cosθ + Lr·cosθ",
+                                f_D=1.0, f_S=1.0, f_Lr=1.0, long_term=True))
     return combos
 
 
@@ -743,6 +754,18 @@ dur_snow = snow_days * 86400.0
 lr_kpa = st.sidebar.number_input("Sobrecarga de techo, Lr [kPa]", min_value=0.0,
                                  max_value=10.0, value=1.00, step=0.05, format="%.2f")
 
+combine_s_lr = st.sidebar.checkbox(
+    "Combinar nieve (S) con sobrecarga de techo (Lr)", value=False,
+    help="Por defecto DESMARCADO: S y Lr se tratan como acciones alternativas "
+         "y no concurrentes, según el criterio de ASCE 7 — D + (Lr o S). "
+         "Marcar solo si el proyecto exige concurrencia explícita, p. ej. "
+         "mantención sobre nieve residual.",
+)
+if combine_s_lr and s_kpa > 1e-9 and lr_kpa > 1e-9:
+    st.sidebar.caption("➕ Se agrega la combinación D·cosθ + S·cosθ + Lr·cosθ")
+else:
+    st.sidebar.caption("S y Lr se evalúan por separado (alternativas)")
+
 # ---- Deformación admisible -------------------------------------------
 st.sidebar.subheader("3. Deformación admisible")
 defl_criterion = st.sidebar.radio(
@@ -801,7 +824,8 @@ geometries = [geo1] + ([geo2] if is_igu else [])
 
 combos = build_load_combos(has_wind=abs(w_kpa) > 1e-9,
                            has_snow=s_kpa > 1e-9,
-                           has_live=lr_kpa > 1e-9)
+                           has_live=lr_kpa > 1e-9,
+                           combine_s_lr=combine_s_lr)
 
 results = []
 for combo in combos:
@@ -1011,6 +1035,10 @@ st.markdown(
       lámina es soportado por ella misma</u> y no se reparte. No se incluyen cargas
       climáticas de la cámara (presión isócora, ΔT, Δaltitud entre fabricación y
       obra), que en lucarnas de vano pequeño pueden gobernar.<br>
+    • <b>Nieve vs. sobrecarga de techo:</b> por defecto S y Lr se tratan como
+      acciones <u>alternativas y no concurrentes</u> — D + (Lr o S) — según el
+      criterio de ASCE 7. La concurrencia S + Lr se agrega solo si se activa
+      explícitamente en el panel de cargas.<br>
     • <b>Cartas NFL:</b> no se reproducen (derivan del GFPM); el chequeo se realiza
       por tensión admisible, criterio equivalente en filosofía pero no idéntico.<br>
     • <b>Empozamiento:</b> se emite advertencia bajo θ = 5°, sin modelar la
